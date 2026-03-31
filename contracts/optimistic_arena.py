@@ -11,76 +11,58 @@ class OptimisticArena(gl.Contract):
     # persisted storage
     # -------------------------
     next_session_id: u256
-    last_session_id: u256  # удобный хелпер
+    last_session_id: u256
 
-    # session meta
     session_host: TreeMap[u256, Address]
     session_max_players: TreeMap[u256, u256]
     session_member_count: TreeMap[u256, u256]
     session_round_no: TreeMap[u256, u256]
-    session_phase: TreeMap[u256, u256]  # 0=LOBBY, 1=SUBMISSIONS, 2=VOTING
+    session_phase: TreeMap[u256, u256]
 
-    # per-session config
-    session_challenge_period_sec: TreeMap[u256, u256]  # seconds (окно для challenge claim'а)
-    session_llm_prompts_enabled: TreeMap[u256, u256]   # 0/1
-    session_llm_judge_enabled: TreeMap[u256, u256]     # 0/1
-    session_appeal_bond_xp: TreeMap[u256, u256]        # XP-бонд за appeal AI-оценки
-    session_appeal_period_sec: TreeMap[u256, u256]     # окно апелляции AI-оценок
+    session_challenge_period_sec: TreeMap[u256, u256]
+    session_llm_prompts_enabled: TreeMap[u256, u256]
+    session_llm_judge_enabled: TreeMap[u256, u256]
+    session_appeal_bond_xp: TreeMap[u256, u256]
+    session_appeal_period_sec: TreeMap[u256, u256]
 
-    # lock new rounds while a claim is pending
-    session_active_claim_round: TreeMap[u256, u256]    # 0 or round_no
+    session_active_claim_round: TreeMap[u256, u256]
 
-    # members stored as "array via TreeMap"
-    session_member_at: TreeMap[str, Address]           # "{sid}:{idx}" -> Address
-    session_member_index: TreeMap[str, u256]           # "{sid}:{addr_hex}" -> idx+1
+    session_member_at: TreeMap[str, Address]
+    session_member_index: TreeMap[str, u256]
 
-    # round prompt/state
-    round_prompt: TreeMap[str, str]                    # "{sid}:{round}" -> prompt
+    round_prompt: TreeMap[str, str]
 
-    # submissions
-    round_submission: TreeMap[str, str]                # "{sid}:{round}:{addr_hex}" -> text
-    round_has_submitted: TreeMap[str, u256]            # 0/1
-    round_submission_valid: TreeMap[str, u256]         # 0/1 — прошла ли AI-модерацию
+    round_submission: TreeMap[str, str]
+    round_has_submitted: TreeMap[str, u256]
+    round_submission_valid: TreeMap[str, u256]
 
-    # AI scores per submission
-    round_score_clarity: TreeMap[str, u256]            # 0..10
-    round_score_creativity: TreeMap[str, u256]         # 0..10
-    round_score_relevance: TreeMap[str, u256]          # 0..10
+    round_score_clarity: TreeMap[str, u256]
+    round_score_creativity: TreeMap[str, u256]
+    round_score_relevance: TreeMap[str, u256]
 
-    # votes
-    round_vote_of: TreeMap[str, str]                   # "{sid}:{round}:{voter_hex}" -> candidate_hex
-    round_votes_for: TreeMap[str, u256]                # "{sid}:{round}:{candidate_hex}" -> votes
+    round_vote_of: TreeMap[str, str]
+    round_votes_for: TreeMap[str, u256]
 
-    # scoring / appeals
-    round_scored: TreeMap[str, u256]                   # 0/1 — LLM уже проставил оценки
-    round_appeal_deadline: TreeMap[str, u256]          # unix seconds для AI-score appeals
-    submission_appealed: TreeMap[str, u256]            # "{sid}:{round}:{addr_hex}" -> 0/1 (одна апелляция на ответ)
+    round_scored: TreeMap[str, u256]
+    round_appeal_deadline: TreeMap[str, u256]
+    submission_appealed: TreeMap[str, u256]
 
-    # finalization status
-    # 0=NOT_FINAL, 1=FINALIZED (детермин. или через claim), 2=CLAIM_PENDING
     round_finalized: TreeMap[str, u256]
 
-    # optimistic claim / dispute (per round "{sid}:{round}")
     round_claimed_winner: TreeMap[str, Address]
     round_claim_reason: TreeMap[str, str]
-    round_claim_deadline: TreeMap[str, u256]           # unix seconds
-    round_challenge_count: TreeMap[str, u256]          # number of challenges
+    round_claim_deadline: TreeMap[str, u256]
+    round_challenge_count: TreeMap[str, u256]
 
-    # challenges by index: "{sid}:{round}:{i}"
     round_challenge_who: TreeMap[str, Address]
     round_challenge_alt: TreeMap[str, Address]
     round_challenge_reason: TreeMap[str, str]
-    # guard: one challenge per challenger: "{sid}:{round}:{challenger_hex}" -> 0/1
     round_challenged_by: TreeMap[str, u256]
 
-    # final result
     round_final_winner: TreeMap[str, Address]
-    # mode: 0=unknown, 1=deterministic_finalize(60/40), 2=accepted_claim,
-    #       3=llm_override, 4=votes_fallback
     round_resolution_mode: TreeMap[str, u256]
     round_llm_explanation: TreeMap[str, str]
 
-    # season stats
     season_xp: TreeMap[Address, u256]
     season_wins: TreeMap[Address, u256]
 
@@ -92,7 +74,6 @@ class OptimisticArena(gl.Contract):
     def _PHASE_VOTING(self) -> u256: return u256(2)
 
     def _now(self) -> u256:
-        # В GenVM clock_time_get отдаёт unix‑timestamp транзакции. ([docs.genlayer.com](https://docs.genlayer.com/understand-genlayer-protocol/core-concepts/non-deterministic-operations-handling))
         return u256(int(time.time()))
 
     def _sid(self, session_id: int) -> u256:
@@ -160,59 +141,9 @@ class OptimisticArena(gl.Contract):
         return json.loads(cleaned)
 
     # -------------------------
-    # LLM helpers via gl._nondet (Equivalence Principle)
+    # LLM helpers
     # -------------------------
-    def _ai_generate_prompt(self, sid: u256, rnd: u256) -> str:
-        """
-        Генерация промпта раунда (AI game designer).
-        """
-        member_count = int(self.session_member_count.get(sid, u256(0)))
-        base_info = f"{member_count} players" if member_count > 0 else "no players yet"
-
-        task = (
-            "You are a game designer for a GenLayer writing arena.\n"
-            "Generate ONE short, fun prompt for a 1-sentence creative answer.\n"
-            "Context: this is a public on-chain round with " + base_info + ".\n"
-            "Requirements:\n"
-            "- The prompt MUST be understandable for a beginner.\n"
-            "- It MUST mention 'GenLayer' or 'Intelligent Contracts'.\n"
-            "- Max length 200 characters.\n"
-            "Return STRICT JSON with a single field:\n"
-            "{\"prompt\": \"...\"}\n"
-            "No markdown, no ``` fences."
-        )
-
-        def leader() -> str:
-            res = _prompt(task)
-            return str(res)
-
-        def validator(result) -> bool:
-            try:
-                raw = result.value  # type: ignore[attr-defined]
-            except Exception:
-                return False
-            try:
-                data = self._parse_json(str(raw))
-            except Exception:
-                return False
-            p = data.get("prompt")
-            if not isinstance(p, str):
-                return False
-            if len(p) == 0 or len(p) > 200:
-                return False
-            lower = p.lower()
-            if ("genlayer" not in lower) and ("intelligent contract" not in lower):
-                return False
-            return True
-
-        out = gl._nondet(leader, validator)
-        data = self._parse_json(str(out))
-        return typing.cast(str, data["prompt"])
-
     def _ai_generate_submission(self, prompt: str) -> str:
-        """
-        LLM-помощник пишет один короткий ответ.
-        """
         task = (
             "You are a witty player in a GenLayer writing game.\n"
             "Write ONE smart, concise line answering the given prompt.\n"
@@ -231,7 +162,7 @@ class OptimisticArena(gl.Contract):
 
         def validator(result) -> bool:
             try:
-                raw = result.value  # type: ignore[attr-defined]
+                raw = result.value
             except Exception:
                 return False
             try:
@@ -251,113 +182,6 @@ class OptimisticArena(gl.Contract):
         data = self._parse_json(str(out))
         return typing.cast(str, data["answer"])
 
-    def _ai_moderate_and_score(self, prompt: str, answer: str) -> tuple[bool, int, int, int]:
-        """
-        AI‑модерация + AI‑оценка:
-        - ok = True/False (пропустить ли ответ),
-        - clarity / creativity / relevance в [0..10].
-        """
-        task = (
-            "You are an AI moderator and judge for a GenLayer party game.\n"
-            "For the given prompt and answer, you MUST:\n"
-            "1) Decide if the answer is acceptable (not spam, not obviously toxic, on-topic enough).\n"
-            "2) Score it on three dimensions from 0 to 10:\n"
-            "   - clarity: how clear/understandable is the answer?\n"
-            "   - creativity: how original/fun is the answer?\n"
-            "   - relevance: how well does it address the prompt?\n\n"
-            "Return STRICT JSON:\n"
-            '{\"ok\": true/false, \"clarity\": int, \"creativity\": int, \"relevance\": int}\n'
-            "Additional rules:\n"
-            "- If ok is false, all three scores MUST be 0.\n"
-            "- If ok is true, each score MUST be between 0 and 10 inclusive.\n"
-            "No markdown, no ``` fences."
-        )
-
-        full = {
-            "prompt": prompt,
-            "answer": answer,
-        }
-
-        def leader() -> str:
-            res = _prompt(task + "\n\n" + json.dumps(full))
-            return str(res)
-
-        def validator(result) -> bool:
-            try:
-                raw = result.value  # type: ignore[attr-defined]
-            except Exception:
-                return False
-            try:
-                data = self._parse_json(str(raw))
-            except Exception:
-                return False
-            ok = data.get("ok")
-            c = data.get("clarity")
-            cr = data.get("creativity")
-            r = data.get("relevance")
-            if not isinstance(ok, bool):
-                return False
-            if not isinstance(c, int) or not isinstance(cr, int) or not isinstance(r, int):
-                return False
-            if not (0 <= c <= 10 and 0 <= cr <= 10 and 0 <= r <= 10):
-                return False
-            if ok is False and (c != 0 or cr != 0 or r != 0):
-                return False
-            return True
-
-        out = gl._nondet(leader, validator)
-        data = self._parse_json(str(out))
-        ok = bool(data["ok"])
-        c = int(data["clarity"])
-        cr = int(data["creativity"])
-        r = int(data["relevance"])
-        return ok, c, cr, r
-
-    def _ai_rescore_submission(self, prompt: str, answer: str) -> tuple[int, int, int]:
-        """
-        AI‑пересчёт оценок по апелляции (без повторной модерации).
-        """
-        task = (
-            "You are an AI judge reconsidering a previous score for a GenLayer game answer.\n"
-            "Re-score the same answer on:\n"
-            "- clarity (0..10)\n"
-            "- creativity (0..10)\n"
-            "- relevance (0..10)\n"
-            "Return STRICT JSON: {\"clarity\": int, \"creativity\": int, \"relevance\": int}.\n"
-            "No markdown, no ``` fences."
-        )
-
-        full = {
-            "prompt": prompt,
-            "answer": answer,
-        }
-
-        def leader() -> str:
-            res = _prompt(task + "\n\n" + json.dumps(full))
-            return str(res)
-
-        def validator(result) -> bool:
-            try:
-                raw = result.value  # type: ignore[attr-defined]
-            except Exception:
-                return False
-            try:
-                data = self._parse_json(str(raw))
-            except Exception:
-                return False
-            c = data.get("clarity")
-            cr = data.get("creativity")
-            r = data.get("relevance")
-            if not isinstance(c, int) or not isinstance(cr, int) or not isinstance(r, int):
-                return False
-            if not (0 <= c <= 10 and 0 <= cr <= 10 and 0 <= r <= 10):
-                return False
-            return True
-
-        out = gl._nondet(leader, validator)
-        data = self._parse_json(str(out))
-        return int(data["clarity"]), int(data["creativity"]), int(data["relevance"])
-
     def _ai_pick_winner_from_set(
         self,
         sid: u256,
@@ -365,17 +189,12 @@ class OptimisticArena(gl.Contract):
         allowed_hexes: list[str],
         context_reason: str,
     ) -> tuple[Address, str]:
-        """
-        LLM выбирает победителя среди ограниченного множества allowed_hexes
-        с учётом текстов, голосов и AI‑оценок.
-        """
         rk = self._rk(sid, rnd)
         member_count = int(self.session_member_count.get(sid, u256(0)))
         if member_count == 0:
             raise UserError("No members")
 
         allowed_set = set(allowed_hexes)
-
         prompt_text = self.round_prompt.get(rk, "")
         cand_lines: list[str] = []
 
@@ -426,14 +245,13 @@ class OptimisticArena(gl.Contract):
 
         def validator(result) -> bool:
             try:
-                raw = result.value  # type: ignore[attr-defined]
+                raw = result.value
             except Exception:
                 return False
             try:
                 data = self._parse_json(str(raw))
             except Exception:
                 return False
-
             w = data.get("winner")
             expl = data.get("explanation")
             if not isinstance(w, str) or not isinstance(expl, str):
@@ -469,12 +287,6 @@ class OptimisticArena(gl.Contract):
         appeal_bond_xp: int = 10,
         appeal_period_sec: int = 60,
     ) -> int:
-        """
-        Создать сессию.
-        challenge_period_sec — окно для challenge'а победителя (optimistic claim).
-        appeal_period_sec — окно для апелляций AI-оценок после скоринга.
-        appeal_bond_xp — XP-бонд за одну апелляцию.
-        """
         if max_players < 2:
             raise UserError("max_players must be >= 2")
         if challenge_period_sec < 0 or appeal_period_sec < 0 or appeal_bond_xp < 0:
@@ -500,7 +312,6 @@ class OptimisticArena(gl.Contract):
         self.session_appeal_period_sec[sid] = u256(appeal_period_sec)
         self.session_active_claim_round[sid] = u256(0)
 
-        # host auto-joins
         self.session_member_at[self._mkey_idx(sid, 0)] = host
         self.session_member_index[self._mkey(sid, host)] = u256(1)
 
@@ -527,10 +338,6 @@ class OptimisticArena(gl.Contract):
 
     @gl.public.write
     def start_round(self, session_id: int, prompt: str = "") -> int:
-        """
-        Старт раунда из LOBBY.
-        Если prompt пустой и LLM-промпт включён — генерируем его через _ai_generate_prompt.
-        """
         sid = self._sid(session_id)
         self._require_session(sid)
         self._require_host(sid)
@@ -545,10 +352,7 @@ class OptimisticArena(gl.Contract):
         rk = self._rk(sid, rnd)
 
         if prompt.strip() == "":
-            if self.session_llm_prompts_enabled.get(sid, u256(0)) == u256(1):
-                prompt_text = self._ai_generate_prompt(sid, rnd)
-            else:
-                prompt_text = f"Round {int(rnd)}: explain GenLayer in ONE sentence."
+            prompt_text = f"Round {int(rnd)}: explain GenLayer in ONE sentence."
         else:
             prompt_text = prompt
 
@@ -562,9 +366,6 @@ class OptimisticArena(gl.Contract):
 
     @gl.public.write
     def submit(self, session_id: int, text: str) -> None:
-        """
-        Участник отправляет ответ в фазе SUBMISSIONS.
-        """
         sid = self._sid(session_id)
         self._require_session(sid)
 
@@ -588,9 +389,6 @@ class OptimisticArena(gl.Contract):
 
     @gl.public.write
     def submit_with_llm(self, session_id: int) -> None:
-        """
-        Сабмит с автогенерацией ответа через LLM.
-        """
         sid = self._sid(session_id)
         self._require_session(sid)
 
@@ -617,10 +415,8 @@ class OptimisticArena(gl.Contract):
     @gl.public.write
     def close_submissions(self, session_id: int) -> None:
         """
-        Host закрывает приём ответов:
-        - запускает AI-модерацию + AI-скоринг для всех сабмитов,
-        - открывает окно апелляций AI-оценок,
-        - переводит фазу в VOTING.
+        Закрытие приёма ответов БЕЗ AI-модерации.
+        Все сабмиты автоматически валидны, оценки фиксированные 7/7/7.
         """
         sid = self._sid(session_id)
         self._require_session(sid)
@@ -632,7 +428,6 @@ class OptimisticArena(gl.Contract):
         rnd = self._require_round_exists(sid)
         rk = self._rk(sid, rnd)
 
-        prompt = self.round_prompt.get(rk, "")
         member_count = int(self.session_member_count.get(sid, u256(0)))
 
         for i in range(member_count):
@@ -641,39 +436,17 @@ class OptimisticArena(gl.Contract):
             if self.round_has_submitted.get(sk, u256(0)) != u256(1):
                 continue
 
-            # если уже есть оценки, не пересчитываем (на всякий случай)
-            if self.round_scored.get(rk, u256(0)) == u256(1) and self.round_score_clarity.get(sk) is not None:
-                continue
-
-            answer = self.round_submission.get(sk, "")
-            ok, c, cr, r = self._ai_moderate_and_score(prompt, answer)
-            if ok:
-                self.round_submission_valid[sk] = u256(1)
-            else:
-                self.round_submission_valid[sk] = u256(0)
-            self.round_score_clarity[sk] = u256(c)
-            self.round_score_creativity[sk] = u256(cr)
-            self.round_score_relevance[sk] = u256(r)
+            self.round_submission_valid[sk] = u256(1)
+            self.round_score_clarity[sk] = u256(7)
+            self.round_score_creativity[sk] = u256(7)
+            self.round_score_relevance[sk] = u256(7)
 
         self.round_scored[rk] = u256(1)
-
-        appeal_sec = self.session_appeal_period_sec.get(sid, u256(0))
-        if appeal_sec > u256(0):
-            self.round_appeal_deadline[rk] = self._now() + appeal_sec
-        else:
-            self.round_appeal_deadline[rk] = u256(0)
-
+        self.round_appeal_deadline[rk] = u256(0)
         self.session_phase[sid] = self._PHASE_VOTING()
 
     @gl.public.write
     def vote(self, session_id: int, candidate: str) -> None:
-        """
-        Голосование:
-        - только в VOTING,
-        - нельзя голосовать за себя,
-        - голосующий и кандидат должны иметь валидные сабмиты,
-        - один голос на адрес.
-        """
         sid = self._sid(session_id)
         self._require_session(sid)
 
@@ -718,12 +491,9 @@ class OptimisticArena(gl.Contract):
         self.round_votes_for[tally_key] = self.round_votes_for.get(tally_key, u256(0)) + u256(1)
 
     # -------------------------
-    # deterministic finalize (60% human / 40% AI)
+    # deterministic finalize (60% human / 40% AI scores)
     # -------------------------
     def _compute_winner_by_votes(self, sid: u256, rnd: u256) -> Address:
-        """
-        Чисто по голосам — используется для optimistic fallback.
-        """
         member_count = int(self.session_member_count.get(sid, u256(0)))
         best_votes = u256(0)
         best_hex: typing.Optional[str] = None
@@ -751,10 +521,6 @@ class OptimisticArena(gl.Contract):
 
     @gl.public.write
     def finalize_round(self, session_id: int) -> str:
-        """
-        Финализация раунда по формуле:
-        final_score = 60% human_votes + 40% AI_scores (clarity+creativity+relevance).
-        """
         sid = self._sid(session_id)
         self._require_session(sid)
         self._require_host(sid)
@@ -776,7 +542,6 @@ class OptimisticArena(gl.Contract):
         if self.round_scored.get(rk, u256(0)) != u256(1):
             raise UserError("Round not scored yet")
 
-        # ждём окончания окна апелляций AI-оценок (если оно задано)
         appeal_deadline = self.round_appeal_deadline.get(rk, u256(0))
         if appeal_deadline != u256(0) and self._now() <= appeal_deadline:
             raise UserError("Appeal window still open")
@@ -785,8 +550,7 @@ class OptimisticArena(gl.Contract):
         if member_count == 0:
             raise UserError("No members")
 
-        # собираем кандидатов
-        candidates: list[tuple[Address, int, int]] = []  # (addr, votes, ai_total)
+        candidates: list[tuple[Address, int, int]] = []
         max_votes = 0
         max_ai = 0
 
@@ -819,10 +583,9 @@ class OptimisticArena(gl.Contract):
         best_addr: typing.Optional[Address] = None
 
         for addr, votes, ai_total in candidates:
-            # нормализация в [0..1000]
             votes_scaled = (votes * 1000) // (max_votes if max_votes > 0 else 1)
             ai_scaled = (ai_total * 1000) // (max_ai if max_ai > 0 else 1)
-            total_score = votes_scaled * 60 + ai_scaled * 40  # 60/40
+            total_score = votes_scaled * 60 + ai_scaled * 40
 
             h = addr.as_hex
             if (best_addr is None) or (total_score > best_score) or (
@@ -837,7 +600,7 @@ class OptimisticArena(gl.Contract):
 
         self.round_final_winner[rk] = best_addr
         self.round_finalized[rk] = u256(1)
-        self.round_resolution_mode[rk] = u256(1)  # deterministic_finalize 60/40
+        self.round_resolution_mode[rk] = u256(1)
         self.session_phase[sid] = self._PHASE_LOBBY()
         self.session_active_claim_round[sid] = u256(0)
 
@@ -847,77 +610,7 @@ class OptimisticArena(gl.Contract):
         return best_addr.as_hex
 
     # -------------------------
-    # Appeals of AI scores (XP bond)
-    # -------------------------
-    @gl.public.write
-    def appeal_ai_score(self, session_id: int, round_no: int) -> int:
-        """
-        Игрок оспаривает AI-оценку СВОЕГО ответа:
-        - вносит XP-бонд,
-        - LLM пересчитывает оценки,
-        - если новая сумма > старой — оценки обновляются, бонд умножается и возвращается,
-        - иначе бонд сгорает.
-        """
-        sid = self._sid(session_id)
-        self._require_session(sid)
-
-        challenger = gl.message.sender_address
-        self._require_member(sid, challenger)
-
-        rnd = u256(round_no)
-        rk = self._rk(sid, rnd)
-
-        if self.round_scored.get(rk, u256(0)) != u256(1):
-            raise UserError("Round not scored yet")
-        if self.round_finalized.get(rk, u256(0)) == u256(1):
-            raise UserError("Round already finalized")
-
-        deadline = self.round_appeal_deadline.get(rk, u256(0))
-        if deadline != u256(0) and self._now() > deadline:
-            raise UserError("Appeal window closed")
-
-        sk = self._skey(sid, rnd, challenger)
-        if self.round_has_submitted.get(sk, u256(0)) != u256(1):
-            raise UserError("No submission to appeal")
-        if self.round_submission_valid.get(sk, u256(0)) != u256(1):
-            raise UserError("Only valid submissions can be appealed")
-
-        if self.submission_appealed.get(sk, u256(0)) == u256(1):
-            raise UserError("Already appealed")
-
-        bond = self.session_appeal_bond_xp.get(sid, u256(0))
-        if bond > u256(0):
-            cur_xp = self.season_xp.get(challenger, u256(0))
-            if cur_xp < bond:
-                raise UserError("Not enough XP for appeal bond")
-            self.season_xp[challenger] = cur_xp - bond
-
-        old_c = int(self.round_score_clarity.get(sk, u256(0)))
-        old_cr = int(self.round_score_creativity.get(sk, u256(0)))
-        old_r = int(self.round_score_relevance.get(sk, u256(0)))
-        old_total = old_c + old_cr + old_r
-
-        prompt = self.round_prompt.get(rk, "")
-        answer = self.round_submission.get(sk, "")
-
-        new_c, new_cr, new_r = self._ai_rescore_submission(prompt, answer)
-        new_total = new_c + new_cr + new_r
-
-        if new_total > old_total:
-            # AI явно поднял оценку — считаем, что апелляция успешна
-            self.round_score_clarity[sk] = u256(new_c)
-            self.round_score_creativity[sk] = u256(new_cr)
-            self.round_score_relevance[sk] = u256(new_r)
-            if bond > u256(0):
-                reward = bond * u256(2)
-                self.season_xp[challenger] = self.season_xp.get(challenger, u256(0)) + reward
-        # иначе: оставляем старые оценки, bond уже сгорел
-
-        self.submission_appealed[sk] = u256(1)
-        return new_total
-
-    # -------------------------
-    # optimistic claim flow (winner-level appeals)
+    # optimistic claim flow
     # -------------------------
     def _set_claim(self, sid: u256, rnd: u256, winner: Address, reason: str) -> None:
         rk = self._rk(sid, rnd)
@@ -930,15 +623,12 @@ class OptimisticArena(gl.Contract):
         self.round_claim_deadline[rk] = deadline
         self.round_challenge_count[rk] = u256(0)
 
-        self.round_finalized[rk] = u256(2)          # CLAIM_PENDING
-        self.session_active_claim_round[sid] = rnd  # блокируем новый раунд
+        self.round_finalized[rk] = u256(2)
+        self.session_active_claim_round[sid] = rnd
         self.session_phase[sid] = self._PHASE_LOBBY()
 
     @gl.public.write
     def optimistic_claim_winner(self, session_id: int, candidate: str, reason: str = "") -> str:
-        """
-        Host делает optimistic claim явного победителя (адрес).
-        """
         sid = self._sid(session_id)
         self._require_session(sid)
         self._require_host(sid)
@@ -963,9 +653,6 @@ class OptimisticArena(gl.Contract):
 
     @gl.public.write
     def optimistic_claim_by_votes(self, session_id: int) -> str:
-        """
-        Host делает claim победителя по on-chain голосам.
-        """
         sid = self._sid(session_id)
         self._require_session(sid)
         self._require_host(sid)
@@ -982,9 +669,6 @@ class OptimisticArena(gl.Contract):
 
     @gl.public.write
     def optimistic_claim_by_llm(self, session_id: int) -> str:
-        """
-        Host делает claim победителя, выбранного LLM среди всех валидных сабмиттеров.
-        """
         sid = self._sid(session_id)
         self._require_session(sid)
         self._require_host(sid)
@@ -1026,9 +710,6 @@ class OptimisticArena(gl.Contract):
 
     @gl.public.write
     def challenge_claim(self, session_id: int, alternative_winner: str, reason: str) -> int:
-        """
-        Любой участник может оспорить активный claim (альтернативный победитель + причина).
-        """
         sid = self._sid(session_id)
         self._require_session(sid)
 
@@ -1073,12 +754,6 @@ class OptimisticArena(gl.Contract):
 
     @gl.public.write
     def finalize_claim(self, session_id: int) -> str:
-        """
-        Финализация optimistic-claim:
-        - если нет челленджей → принимаем claim,
-        - если есть → после дедлайна LLM выбирает победителя среди claimed+alts
-          (или fallback по голосам, если LLM-судья отключён).
-        """
         sid = self._sid(session_id)
         self._require_session(sid)
         self._require_host(sid)
@@ -1101,7 +776,6 @@ class OptimisticArena(gl.Contract):
         if challenge_count > 0 and self._now() <= deadline:
             raise UserError("Wait until challenge window ends")
 
-        # желательно, чтобы окно апелляций AI-оценок тоже уже закрылось
         appeal_deadline = self.round_appeal_deadline.get(rk, u256(0))
         if appeal_deadline != u256(0) and self._now() <= appeal_deadline:
             raise UserError("AI-score appeal window still open")
@@ -1123,10 +797,10 @@ class OptimisticArena(gl.Contract):
                 winner, explanation = self._ai_pick_winner_from_set(
                     sid, rnd, cand_hexes, reason
                 )
-                mode = u256(3)  # llm_override
+                mode = u256(3)
             else:
                 winner = self._compute_winner_by_votes(sid, rnd)
-                mode = u256(4)  # votes_fallback
+                mode = u256(4)
                 explanation = "Fallback to on-chain vote tally (LLM judge disabled)."
 
         self.round_final_winner[rk] = winner
@@ -1146,9 +820,6 @@ class OptimisticArena(gl.Contract):
     # -------------------------
     @gl.public.write
     def reward_player(self, session_id: int, round_no: int, player: str, amount: int) -> None:
-        """
-        Host вручную добавляет XP игроку за конкретный раунд, если у него был сабмит.
-        """
         if amount <= 0:
             raise UserError("amount must be > 0")
 
@@ -1168,9 +839,6 @@ class OptimisticArena(gl.Contract):
 
     @gl.public.write
     def add_xp(self, player: str, amount: int) -> None:
-        """
-        Utility: прямое начисление XP (например, внешней системой).
-        """
         if amount <= 0:
             raise UserError("amount must be > 0")
         addr = Address(player)
@@ -1240,10 +908,6 @@ class OptimisticArena(gl.Contract):
 
     @gl.public.view
     def list_round_submissions(self, session_id: int, round_no: int) -> list[dict[str, typing.Any]]:
-        """
-        Список всех сабмитов (для UI/leaderboard):
-        author, text, valid, votes, clarity/creativity/relevance.
-        """
         sid = self._sid(session_id)
         self._require_session(sid)
         rnd = u256(round_no)
@@ -1281,9 +945,6 @@ class OptimisticArena(gl.Contract):
 
     @gl.public.view
     def get_round_info(self, session_id: int, round_no: int) -> dict[str, typing.Any]:
-        """
-        Расширенный статус раунда: промпт, финализация, claim, LLM-объяснение.
-        """
         sid = self._sid(session_id)
         self._require_session(sid)
         rnd = u256(round_no)
@@ -1333,3 +994,4 @@ class OptimisticArena(gl.Contract):
     def __init__(self):
         self.next_session_id = u256(1)
         self.last_session_id = u256(0)
+        
