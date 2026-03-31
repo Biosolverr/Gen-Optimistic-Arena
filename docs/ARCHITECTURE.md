@@ -1,16 +1,13 @@
-# Architecture
+# OptimisticArena — Architecture
 
 ## Phases
-- 0 LOBBY
-- 1 SUBMISSIONS
-- 2 VOTING
 
-## Deterministic finalize (60/40)
-Normalize votes and AI totals to [0..1000], then:
-total = votes*60 + ai*40
-Tie-break: smallest address hex.
+Every session has a current phase stored on-chain.
 
-## Optimistic claim
-Host can claim winner during VOTING.
-Claim locks starting a new round until finalized.
-If challenged: LLM judge picks from (claimed + alternatives) or fallback to vote tally.
+| Value | Name | Description |
+|---|---|---|
+| `0` | LOBBY | Waiting for host to start a round |
+| `1` | SUBMISSIONS | Players submit their answers |
+| `2` | VOTING | Players vote for each other's submissions |
+
+### Phase Flow
