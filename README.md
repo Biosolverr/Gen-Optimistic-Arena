@@ -1,56 +1,58 @@
 # OptimisticArena
 
-An on-chain writing game built as a GenLayer Intelligent Contract.
+An on-chain competitive writing game built as a **GenLayer Intelligent Contract**.
 
-Players compete each round by submitting creative written answers to a prompt.
-Winners are determined by a combination of human votes and AI scoring.
-Disputes are resolved through an optimistic claim and challenge system.
+Players compete by submitting creative answers, voting, and resolving rounds through a hybrid system of:
 
-## Features
+- Human voting  
+- AI scoring  
+- Deterministic resolution (60% votes / 40% AI)  
+- Optional optimistic claims with challenge windows  
 
-- Sessions with multiple rounds
-- Manual or AI-generated round prompts
-- AI moderation and scoring (clarity / creativity / relevance)
-- Human voting
-- Deterministic finalization: 60% votes / 40% AI scores
-- Optimistic claim → challenge → finalize flow
-- AI-score appeals with XP bond
-- On-chain XP and win tracking
+Built for **:contentReference[oaicite:0]{index=0}**
 
-## Repository Structure
+---
 
-contracts/
-optimistic_arena.py     # GenLayer Intelligent Contract
-docs/
-API.md                  # All public methods with parameters and descriptions
-ARCHITECTURE.md         # Phase flow, scoring formula, resolution modes
-README.md
-.gitignore
+## Core Features
+
+- Session-based multiplayer system  
+- AI-generated or manual prompts  
+- AI scoring (clarity / creativity / relevance)  
+- Voting system  
+- Optimistic claim → challenge → finalize flow  
+- AI score appeals with XP bonding  
+- XP + win tracking  
+
+---
+
+## Game Flow
+
+LOBBY → SUBMISSIONS → VOTING → FINALIZED → LOBBY
+
+---
 
 ## Quick Start
 
-1. Deploy `contracts/optimistic_arena.py` in [GenLayer Studio](https://studio.genlayer.com)
-2. Call `create_session` from the host wallet
-3. Have other players call `join_session`
-4. Host calls `start_round` with a prompt
-5. All players call `submit`
-6. Host calls `close_submissions`
-7. All players call `vote`
-8. Host calls `finalize_round`
+1. Deploy `contracts/optimistic_arena.py` in GenLayer Studio  
+2. Call `create_session()`  
+3. Players join via `join_session()`  
+4. Start round via `start_round()`  
+5. Submit answers  
+6. Close submissions  
+7. Vote  
+8. Finalize round  
 
-See [docs/API.md](docs/API.md) for full method reference.
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for phase flow and scoring details.
+---
 
-## Phase Overview
+## Docs
 
-| Phase | Value | Description |
-|---|---|---|
-| LOBBY | 0 | Waiting to start a round |
-| SUBMISSIONS | 1 | Players submitting answers |
-| VOTING | 2 | Players voting for submissions |
+- `docs/ARCHITECTURE.md`
+- `docs/API.md`
+
+---
 
 ## Tech Stack
 
-- [GenLayer](https://genlayer.com) — Intelligent Contract platform
-- Python — Contract language
-- LLM consensus — Used for AI scoring, submission generation, and dispute resolution
+- GenLayer Intelligent Contracts  
+- Python  
+- LLM-based scoring & moderation  
